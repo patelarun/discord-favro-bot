@@ -5,6 +5,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('timesheet')
     .setDescription('Post your Favro timesheet entries for today')
+    .addStringOption(o =>
+      o.setName('cards')
+       .setDescription('Card numbers or IDs (comma/space separated), e.g. BOK-5106, BOK-5120')
+       .setRequired(false)
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('linkfavro')

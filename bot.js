@@ -27,7 +27,9 @@ if (!fs.existsSync(MAP_PATH)) fs.writeFileSync(MAP_PATH, '{}');
 
 function loadMap() {
   try {
-    return JSON.parse(fs.readFileSync(MAP_PATH, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(MAP_PATH, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
   } catch {
     return {};
   }
@@ -59,6 +61,12 @@ const TIME_CF_ID = process.env.FAVRO_TIME_CF_ID;
 if (!TIME_CF_ID)
   console.warn('⚠️  Missing FAVRO_TIME_CF_ID — set this in your environment.');
 
+const WIDGET_IDS = (process.env.FAVRO_WIDGET_IDS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const MAX_PAGES_PER_WIDGET = Number(process.env.FAVRO_MAX_PAGES_PER_WIDGET || 3);
+
 // ----- Helpers -----
 function fmtHHMM(ms) {
   const mins = Math.round((ms || 0) / 60000);
@@ -87,16 +95,15 @@ function isTodayInTZ(iso) {
 }
 
 async function findFavroUserByEmail(email) {
-  let page = 0,
-    requestId = undefined,
-    pages = 1;
+  let page = 0, requestId = undefined, pages = 1;
   while (page < pages) {
     const params = {};
-    if (requestId) {
-      params.requestId = requestId;
-      params.page = page;
-    }
-    const { data } = await favro.get('/users', { params });
+    if (requestId) { params.requestId = requestId; params.page = page; }
+    const { data, headers } = await favro.get('/users', { params });
+
+    const backendId = headers['x-favro-backend-identifier'];
+    if (backendId) favro.defaults.headers['X-Favro-Backend-Identifier'] = backendId;
+
     requestId = data.requestId;
     pages = data.pages || 1;
     for (const u of data.entities || []) {
@@ -107,50 +114,49 @@ async function findFavroUserByEmail(email) {
   return null;
 }
 
-/**
- * Get only the cards that had activity today (local TZ).
- * Strategy:
- *   1) Page through /activities with since..until for today
- *   2) Collect unique cardCommonIds
- *   3) Fetch those cards (include=customFields) so we can read the Time field
- */
-async function getCardsTouchedToday() {
-  const start = dayjs().tz(TZ).startOf('day').toISOString();
-  const end   = dayjs().tz(TZ).endOf('day').toISOString();
+// --- Card lookup utilities ---
 
-  const ids = new Set();
+// 1) Direct by cardCommonId (fast)
+async function fetchCardByCommonId(cardCommonId) {
+  const { data } = await favro.get('/cards', { params: { cardCommonId, include: 'customFields' }});
+  return (data.entities || [])[0] || null;
+}
 
-  let page = 0, pages = 1, requestId;
-  while (page < pages) {
-    const params = { since: start, until: end };
-    if (requestId) { params.requestId = requestId; params.page = page; }
-    const { data, headers } = await favro.get('/activities', { params });
+// 2) Key search inside known boards (prefix-seq like "BOK-5106")
+function parseKey(token) {
+  const m = String(token).trim().match(/^([A-Za-z]+)-(\d+)$/);
+  return m ? { prefix: m[1].toUpperCase(), sequentialId: Number(m[2]) } : null;
+}
 
-    // pagination
-    requestId = data.requestId;
-    pages = data.pages || 1;
+// Since the public API doesn’t expose a direct filter by (prefix,sequentialId),
+// we scan a few pages per provided board and stop when we find the matching key.
+async function findCardByKeyInBoards(key) {
+  if (!WIDGET_IDS.length) return null;
 
-    // stickiness header for routing (Favro rec)
-    const backendId = headers['x-favro-backend-identifier'];
-    if (backendId)
-      favro.defaults.headers['X-Favro-Backend-Identifier'] = backendId;
+  for (const widgetCommonId of WIDGET_IDS) {
+    let page = 0, pages = 1, requestId;
+    while (page < pages && page < MAX_PAGES_PER_WIDGET) {
+      const params = { widgetCommonId, include: 'customFields' };
+      if (requestId) { params.requestId = requestId; params.page = page; }
+      const { data, headers } = await favro.get('/cards', { params });
 
-    for (const a of data.entities || []) {
-      // Most activity objects include the cardCommonId they refer to
-      if (a.cardCommonId) ids.add(a.cardCommonId);
+      const backendId = headers['x-favro-backend-identifier'];
+      if (backendId) favro.defaults.headers['X-Favro-Backend-Identifier'] = backendId;
+
+      requestId = data.requestId;
+      pages = data.pages || 1;
+
+      for (const c of data.entities || []) {
+        const seq = c?.sequentialId ?? c?.cardNumber ?? c?.cardIdShort;
+        const pre = (c?.prefix ?? c?.workspacePrefix ?? '').toString().toUpperCase();
+        if (seq && pre && pre === key.prefix && Number(seq) === key.sequentialId) {
+          return c;
+        }
+      }
+      page++;
     }
-    page++;
   }
-
-  // Fetch only those cards (include customFields)
-  const cards = [];
-  for (const cardCommonId of ids) {
-    const { data } = await favro.get('/cards', {
-      params: { cardCommonId, include: 'customFields' }
-    });
-    for (const c of data.entities || []) cards.push(c);
-  }
-  return cards;
+  return null;
 }
 
 function extractTodaysReports(card, favroUserId, timeCfId) {
@@ -188,26 +194,62 @@ async function handleTimesheet(interaction) {
     return;
   }
 
-  // 🔎 Only inspect cards that had activity today
-  const todaysCards = await getCardsTouchedToday();
+  const tokensRaw = interaction.options.getString('cards') || '';
+  const tokens = tokensRaw
+    .split(/[, \n]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
+
+  if (!tokens.length) {
+    await interaction.editReply('Please provide card numbers or IDs, e.g. `/timesheet cards:BOK-5106 BOK-5120`');
+    return;
+  }
 
   let results = [];
-  for (const card of todaysCards) {
-    const entries = extractTodaysReports(card, favroUserId, TIME_CF_ID);
-    if (entries.length) {
-      for (const e of entries) {
+  try {
+    for (const t of tokens) {
+      let card = null;
+
+      // If it looks like a cardCommonId (long base64-like), try direct:
+      if (/^[A-Za-z0-9_-]{8,}$/.test(t) && !t.includes('-')) {
+        card = await fetchCardByCommonId(t);
+      }
+
+      // Else if it looks like KEY-123:
+      if (!card) {
+        const key = parseKey(t);
+        if (key) {
+          card = await findCardByKeyInBoards(key);
+        }
+      }
+
+      if (!card) {
+        // Couldn’t resolve this token
+        results.push({ cardKey: t, time: '00:00', desc: '(card not found in scoped boards)' });
+        continue;
+      }
+
+      const entries = extractTodaysReports(card, favroUserId, TIME_CF_ID);
+      if (entries.length) {
+        for (const e of entries) {
+          results.push({
+            cardKey: getCardKey(card),
+            time: fmtHHMM(e.ms),
+            desc: e.desc,
+          });
+        }
+      } else {
+        // Found the card but no timesheet today for this user
         results.push({
           cardKey: getCardKey(card),
-          time: fmtHHMM(e.ms),
-          desc: e.desc,
+          time: '00:00',
+          desc: '(no timesheet entry for today)',
         });
       }
     }
-  }
-
-  if (!results.length) {
-    const d = dayjs().tz(TZ).format('YYYY-MM-DD');
-    await interaction.editReply(`No Favro timesheet entries found for **${d}**.`);
+  } catch (err) {
+    console.error('Favro fetch failed:', err?.response?.status, err?.response?.data || err);
+    await interaction.editReply('Could not fetch Favro cards right now. Please try again later.');
     return;
   }
 
