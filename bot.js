@@ -413,13 +413,15 @@ async function handleTimesheet(interaction) {
   }
 
   const header = "Today's update:";
-  const bodyLines = results
-    .map((r) => `**${r.cardKey}** - ${r.time}\n* ${ensureTrailingPeriod(r.desc)}`)
+  const bodyLines = []
   if (extras.length) {
     for (const x of extras) {
       bodyLines.push(`* ${ensureTrailingPeriod(x)}`);
     }
   }
+
+  results.forEach((r) => bodyLines.push(`**${r.cardKey}** - ${r.time}\n* ${ensureTrailingPeriod(r.desc)}`))
+
   const body = bodyLines.join('\n');
 
   await interaction.editReply(`${header}\n${body}`);
