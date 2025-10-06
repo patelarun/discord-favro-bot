@@ -19,6 +19,8 @@ const TZ = process.env.TIMEZONE || 'Europe/Stockholm';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const FAVRO_DEFAULT_CARD_PREFIX = process.env.FAVRO_DEFAULT_CARD_PREFIX;
+
 // ----- Data folder & mapping file -----
 const DATA_DIR = path.join(__dirname, 'data');
 const MAP_PATH = path.join(DATA_DIR, 'user-map.json');
@@ -101,7 +103,7 @@ function fmtHHMM(ms) {
 
 function getCardKey(card) {
   const seq = card?.sequentialId ?? card?.cardNumber ?? card?.cardIdShort ?? null;
-  const pre = card?.prefix ?? card?.workspacePrefix ?? '';
+  const pre = card?.prefix ?? card?.workspacePrefix ?? FAVRO_DEFAULT_CARD_PREFIX;
   if (seq && pre) return `${pre}-${seq}`;
   if (seq) return String(seq);
   if (card?.cardCommonId) return card.cardCommonId.slice(0, 8).toUpperCase();
