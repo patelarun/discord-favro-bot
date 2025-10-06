@@ -150,17 +150,63 @@ function parseKey(token) {
   return m ? { prefix: m[1].toUpperCase(), sequentialId: Number(m[2]) } : null;
 }
 
+// Accept Favro URLs and extract widget and card identifiers so users can paste links.
+// Examples:
+// https://favro.com/organization/<orgId>/<widgetCommonId>?card=Bok-6074
+// https://favro.com/organization/<orgId>/<widgetCommonId>?card=<cardCommonId>
+function parseFavroUrlToken(raw) {
+  let url;
+  try {
+    url = new URL(String(raw));
+  } catch {
+    return null;
+  }
+  if (url.hostname !== 'favro.com') return null;
+  const parts = url.pathname.split('/').filter(Boolean);
+  // organization/<org>/<widget>
+  const orgIdx = parts.indexOf('organization');
+  if (orgIdx === -1 || parts.length < orgIdx + 3) return null;
+  const orgId = parts[orgIdx + 1];
+  const widgetCommonId = parts[orgIdx + 2];
+  const cardParam = url.searchParams.get('card') || '';
+  let cardCommonId = null;
+  let cardKey = null;
+  if (cardParam) {
+    if (/^[A-Za-z0-9_-]{8,}$/.test(cardParam) && !cardParam.includes('-')) {
+      cardCommonId = cardParam;
+    } else if (/^[A-Za-z]+-\d+$/.test(cardParam)) {
+      cardKey = cardParam;
+    }
+  }
+  return { orgId, widgetCommonId, cardCommonId, cardKey };
+}
+
 // Since the public API doesn’t expose a direct filter by (prefix,sequentialId),
 // we scan a few pages per provided board and stop when we find the matching key.
-async function findCardByKeyInBoards(key) {
+async function findCardByKeyInBoards(key, preferredWidgetId) {
   if (!WIDGET_IDS.length) return null;
 
-  for (const widgetCommonId of WIDGET_IDS) {
+  const orderedWidgets = [];
+  if (preferredWidgetId) orderedWidgets.push(preferredWidgetId);
+  for (const w of WIDGET_IDS) if (!orderedWidgets.includes(w)) orderedWidgets.push(w);
+
+  for (const widgetCommonId of orderedWidgets) {
     let page = 0, pages = 1, requestId;
+    let skipThisWidget = false;
     while (page < pages && page < MAX_PAGES_PER_WIDGET) {
       const params = { widgetCommonId, include: 'customFields' };
       if (requestId) { params.requestId = requestId; params.page = page; }
-      const { data, headers } = await favro.get('/cards', { params });
+      let data, headers;
+      try {
+        ({ data, headers } = await favro.get('/cards', { params }));
+      } catch (err) {
+        if (err?.response?.status === 403) {
+          console.warn('Skipping Favro widget due to 403', { widgetCommonId });
+          skipThisWidget = true;
+          break;
+        }
+        throw err;
+      }
 
       const backendId = headers['x-favro-backend-identifier'];
       if (backendId) favro.defaults.headers.common['X-Favro-Backend-Identifier'] = backendId;
@@ -176,6 +222,9 @@ async function findCardByKeyInBoards(key) {
         }
       }
       page++;
+    }
+    if (skipThisWidget) {
+      continue;
     }
   }
   return null;
@@ -231,6 +280,20 @@ async function handleTimesheet(interaction) {
   try {
     for (const t of tokens) {
       let card = null;
+      let preferredWidgetId = null;
+
+      const favroUrlParts = parseFavroUrlToken(t);
+      if (favroUrlParts) {
+        preferredWidgetId = favroUrlParts.widgetCommonId || null;
+        if (favroUrlParts.cardCommonId) {
+          card = await fetchCardByCommonId(favroUrlParts.cardCommonId);
+        } else if (favroUrlParts.cardKey) {
+          const keyFromUrl = parseKey(favroUrlParts.cardKey);
+          if (keyFromUrl) {
+            card = await findCardByKeyInBoards(keyFromUrl, preferredWidgetId);
+          }
+        }
+      }
 
       // If it looks like a cardCommonId (long base64-like), try direct:
       if (/^[A-Za-z0-9_-]{8,}$/.test(t) && !t.includes('-')) {
@@ -241,7 +304,7 @@ async function handleTimesheet(interaction) {
       if (!card) {
         const key = parseKey(t);
         if (key) {
-          card = await findCardByKeyInBoards(key);
+          card = await findCardByKeyInBoards(key, preferredWidgetId);
         }
       }
 
