@@ -481,18 +481,27 @@ async function handleTimesheetDelete(interaction) {
     return;
   }
   try {
-    const channel = interaction.channel;
-    const msg = await channel.messages.fetch(entry.messageId);
-    if (msg && msg.author?.id === client.user.id) {
-      await msg.delete();
-      delete lastMap[key];
-      saveLastTimesheetMap(lastMap);
-      await interaction.editReply('Deleted your last timesheet message.');
-    } else {
-      await interaction.editReply('Cannot delete that message (not posted by this bot).');
-    }
+    // Try deleting via the interaction webhook first (works for the bot's own messages)
+    await interaction.webhook.deleteMessage(entry.messageId);
+    delete lastMap[key];
+    saveLastTimesheetMap(lastMap);
+    await interaction.editReply('Deleted your last timesheet message.');
   } catch (err) {
-    await interaction.editReply('Could not delete your last timesheet message (maybe it was already removed).');
+    try {
+      // Fallback: fetch message from channel and delete (requires Read Message History)
+      const channel = interaction.channel;
+      const msg = await channel.messages.fetch(entry.messageId);
+      if (msg && msg.author?.id === client.user.id) {
+        await msg.delete();
+        delete lastMap[key];
+        saveLastTimesheetMap(lastMap);
+        await interaction.editReply('Deleted your last timesheet message.');
+        return;
+      }
+      await interaction.editReply('Cannot delete that message (not posted by this bot).');
+    } catch {
+      await interaction.editReply('Could not delete your last timesheet message (maybe it was already removed).');
+    }
   }
 }
 
