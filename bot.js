@@ -196,63 +196,72 @@ async function findCardByKeyInBoards(key, preferredWidgetId) {
   for (const w of WIDGET_IDS) if (!orderedWidgets.includes(w)) orderedWidgets.push(w);
   if (!orderedWidgets.length) return null;
 
-  for (const widgetCommonId of orderedWidgets) {
-    let page = 0, pages = 1, requestId;
-    let skipThisWidget = false;
-    while (page < pages && page < MAX_PAGES_PER_WIDGET) {
-      const params = { widgetCommonId, include: 'basic' };
-      if (requestId) { params.requestId = requestId; params.page = page; }
-      let data, headers;
-      try {
-        ({ data, headers } = await favro.get('/cards', { params }));
-      } catch (err) {
-        if (err?.response?.status === 403) {
-          console.warn('Skipping Favro widget due to 403', { widgetCommonId });
-          skipThisWidget = true;
-          break;
+  // Attempt up to two passes: first with include=basic (faster), then include=customFields (richer)
+  const includes = ['basic', 'customFields'];
+  for (const include of includes) {
+    for (const widgetCommonId of orderedWidgets) {
+      let page = 0, pages = 1, requestId;
+      let skipThisWidget = false;
+      while (page < pages && page < MAX_PAGES_PER_WIDGET) {
+        const params = { widgetCommonId, include };
+        if (requestId) { params.requestId = requestId; params.page = page; }
+        let data, headers;
+        try {
+          ({ data, headers } = await favro.get('/cards', { params }));
+        } catch (err) {
+          if (err?.response?.status === 403) {
+            console.warn('Skipping Favro widget due to 403', { widgetCommonId });
+            skipThisWidget = true;
+            break;
+          }
+          throw err;
         }
-        throw err;
-      }
 
-      const backendId = headers['x-favro-backend-identifier'];
-      if (backendId) favro.defaults.headers.common['X-Favro-Backend-Identifier'] = backendId;
+        const backendId = headers['x-favro-backend-identifier'];
+        if (backendId) favro.defaults.headers.common['X-Favro-Backend-Identifier'] = backendId;
 
-      requestId = data.requestId;
-      pages = data.pages || 1;
+        requestId = data.requestId;
+        pages = data.pages || 1;
 
-      for (const c of data.entities || []) {
-        const seq = c?.sequentialId ?? c?.cardNumber ?? c?.cardIdShort;
-        const seqNum = seq != null ? Number(seq) : null;
-        const pre = (c?.prefix ?? c?.workspacePrefix ?? '').toString().toUpperCase();
+        for (const c of data.entities || []) {
+          const seq = c?.sequentialId ?? c?.cardNumber ?? c?.cardIdShort;
+          const seqNum = seq != null ? Number(seq) : null;
+          const pre = (c?.prefix ?? c?.workspacePrefix ?? '').toString().toUpperCase();
 
-        if (seqNum != null && seqNum === key.sequentialId) {
-          // If prefix is present in this page and matches, accept immediately (and fetch details if possible)
-          if (pre && pre === key.prefix) {
+          if (seqNum != null && seqNum === key.sequentialId) {
+            // If prefix is present in this page and matches, accept immediately (and fetch details if possible)
+            if (pre && pre === key.prefix) {
+              if (c.cardCommonId) {
+                const detailed = await fetchCardByCommonId(c.cardCommonId);
+                return detailed || c;
+              }
+              return c;
+            }
+
+            // If prefix missing or could not be confirmed, try to fetch detailed to verify
             if (c.cardCommonId) {
               const detailed = await fetchCardByCommonId(c.cardCommonId);
-              return detailed || c;
-            }
-            return c;
-          }
-
-          // If prefix is missing in the basic payload, fetch detailed card to verify prefix
-          if (c.cardCommonId) {
-            const detailed = await fetchCardByCommonId(c.cardCommonId);
-            if (detailed) {
-              const detailedPre = (detailed?.prefix ?? detailed?.workspacePrefix ?? '').toString().toUpperCase();
-              const detailedSeq = detailed?.sequentialId ?? detailed?.cardNumber ?? detailed?.cardIdShort;
-              const detailedSeqNum = detailedSeq != null ? Number(detailedSeq) : null;
-              if (detailedPre && detailedPre === key.prefix && detailedSeqNum === key.sequentialId) {
-                return detailed;
+              if (detailed) {
+                const detailedPre = (detailed?.prefix ?? detailed?.workspacePrefix ?? '').toString().toUpperCase();
+                const detailedSeq = detailed?.sequentialId ?? detailed?.cardNumber ?? detailed?.cardIdShort;
+                const detailedSeqNum = detailedSeq != null ? Number(detailedSeq) : null;
+                if ((!detailedPre || detailedPre === key.prefix) && detailedSeqNum === key.sequentialId) {
+                  return detailed;
+                }
               }
+            }
+
+            // As a last resort, if we are scanning the preferred widget, accept by seq match
+            if (preferredWidgetId && widgetCommonId === preferredWidgetId) {
+              return c;
             }
           }
         }
+        page++;
       }
-      page++;
-    }
-    if (skipThisWidget) {
-      continue;
+      if (skipThisWidget) {
+        continue;
+      }
     }
   }
   return null;
