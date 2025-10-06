@@ -140,8 +140,15 @@ async function findFavroUserByEmail(email) {
 
 // 1) Direct by cardCommonId (fast)
 async function fetchCardByCommonId(cardCommonId) {
-  const { data } = await favro.get('/cards', { params: { cardCommonId, include: 'customFields' }});
-  return (data.entities || [])[0] || null;
+  try {
+    const { data } = await favro.get('/cards', { params: { cardCommonId, include: 'customFields' }});
+    return (data.entities || [])[0] || null;
+  } catch (err) {
+    if (err?.response?.status === 403) {
+      return null;
+    }
+    throw err;
+  }
 }
 
 // 2) Key search inside known boards (prefix-seq like "BOK-5106")
@@ -161,7 +168,7 @@ function parseFavroUrlToken(raw) {
   } catch {
     return null;
   }
-  if (url.hostname !== 'favro.com') return null;
+  if (!/\.favro\.com$|^favro\.com$/i.test(url.hostname)) return null;
   const parts = url.pathname.split('/').filter(Boolean);
   // organization/<org>/<widget>
   const orgIdx = parts.indexOf('organization');
@@ -193,7 +200,7 @@ async function findCardByKeyInBoards(key, preferredWidgetId) {
     let page = 0, pages = 1, requestId;
     let skipThisWidget = false;
     while (page < pages && page < MAX_PAGES_PER_WIDGET) {
-      const params = { widgetCommonId, include: 'customFields' };
+      const params = { widgetCommonId, include: 'basic' };
       if (requestId) { params.requestId = requestId; params.page = page; }
       let data, headers;
       try {
@@ -217,6 +224,11 @@ async function findCardByKeyInBoards(key, preferredWidgetId) {
         const seq = c?.sequentialId ?? c?.cardNumber ?? c?.cardIdShort;
         const pre = (c?.prefix ?? c?.workspacePrefix ?? '').toString().toUpperCase();
         if (seq && pre && pre === key.prefix && Number(seq) === key.sequentialId) {
+          // fetch full details with custom fields only when matched
+          if (c.cardCommonId) {
+            const detailed = await fetchCardByCommonId(c.cardCommonId);
+            return detailed || c;
+          }
           return c;
         }
       }
