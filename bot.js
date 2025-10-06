@@ -222,14 +222,31 @@ async function findCardByKeyInBoards(key, preferredWidgetId) {
 
       for (const c of data.entities || []) {
         const seq = c?.sequentialId ?? c?.cardNumber ?? c?.cardIdShort;
+        const seqNum = seq != null ? Number(seq) : null;
         const pre = (c?.prefix ?? c?.workspacePrefix ?? '').toString().toUpperCase();
-        if (seq && pre && pre === key.prefix && Number(seq) === key.sequentialId) {
-          // fetch full details with custom fields only when matched
+
+        if (seqNum != null && seqNum === key.sequentialId) {
+          // If prefix is present in this page and matches, accept immediately (and fetch details if possible)
+          if (pre && pre === key.prefix) {
+            if (c.cardCommonId) {
+              const detailed = await fetchCardByCommonId(c.cardCommonId);
+              return detailed || c;
+            }
+            return c;
+          }
+
+          // If prefix is missing in the basic payload, fetch detailed card to verify prefix
           if (c.cardCommonId) {
             const detailed = await fetchCardByCommonId(c.cardCommonId);
-            return detailed || c;
+            if (detailed) {
+              const detailedPre = (detailed?.prefix ?? detailed?.workspacePrefix ?? '').toString().toUpperCase();
+              const detailedSeq = detailed?.sequentialId ?? detailed?.cardNumber ?? detailed?.cardIdShort;
+              const detailedSeqNum = detailedSeq != null ? Number(detailedSeq) : null;
+              if (detailedPre && detailedPre === key.prefix && detailedSeqNum === key.sequentialId) {
+                return detailed;
+              }
+            }
           }
-          return c;
         }
       }
       page++;
