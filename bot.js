@@ -57,6 +57,28 @@ const favro = axios.create({
   timeout: 30000,
 });
 
+// Ensure required Favro headers are consistently applied and the backend identifier
+// returned by Favro is persisted for subsequent requests.
+favro.interceptors.request.use((config) => {
+  config.headers = config.headers || {};
+  if (process.env.FAVRO_ORG_ID) {
+    config.headers['organizationId'] = process.env.FAVRO_ORG_ID;
+  }
+  const persistedBackendId = favro?.defaults?.headers?.common?.['X-Favro-Backend-Identifier'];
+  if (persistedBackendId) {
+    config.headers['X-Favro-Backend-Identifier'] = persistedBackendId;
+  }
+  return config;
+});
+
+favro.interceptors.response.use((response) => {
+  const backendId = response?.headers?.['x-favro-backend-identifier'];
+  if (backendId) {
+    favro.defaults.headers.common['X-Favro-Backend-Identifier'] = backendId;
+  }
+  return response;
+});
+
 const TIME_CF_ID = process.env.FAVRO_TIME_CF_ID;
 if (!TIME_CF_ID)
   console.warn('⚠️  Missing FAVRO_TIME_CF_ID — set this in your environment.');
@@ -102,7 +124,7 @@ async function findFavroUserByEmail(email) {
     const { data, headers } = await favro.get('/users', { params });
 
     const backendId = headers['x-favro-backend-identifier'];
-    if (backendId) favro.defaults.headers['X-Favro-Backend-Identifier'] = backendId;
+    if (backendId) favro.defaults.headers.common['X-Favro-Backend-Identifier'] = backendId;
 
     requestId = data.requestId;
     pages = data.pages || 1;
@@ -141,7 +163,7 @@ async function findCardByKeyInBoards(key) {
       const { data, headers } = await favro.get('/cards', { params });
 
       const backendId = headers['x-favro-backend-identifier'];
-      if (backendId) favro.defaults.headers['X-Favro-Backend-Identifier'] = backendId;
+      if (backendId) favro.defaults.headers.common['X-Favro-Backend-Identifier'] = backendId;
 
       requestId = data.requestId;
       pages = data.pages || 1;
@@ -248,7 +270,16 @@ async function handleTimesheet(interaction) {
       }
     }
   } catch (err) {
-    console.error('Favro fetch failed:', err?.response?.status, err?.response?.data || err);
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    const req = err?.config;
+    console.error('Favro fetch failed:', {
+      status,
+      endpoint: req?.baseURL ? `${req.baseURL}${req.url}` : req?.url,
+      method: req?.method,
+      params: req?.params,
+      data,
+    });
     await interaction.editReply('Could not fetch Favro cards right now. Please try again later.');
     return;
   }
