@@ -108,6 +108,12 @@ function getCardKey(card) {
   return '(card)';
 }
 
+function ensureTrailingPeriod(text) {
+  const s = String(text || '').trim();
+  if (!s) return '.';
+  return /[.!?]$/.test(s) ? s : `${s}.`;
+}
+
 function isTodayInTZ(iso) {
   if (!iso) return false;
   const t = dayjs(iso).tz(TZ);
@@ -231,11 +237,11 @@ async function findCardByKeyInBoards(key, preferredWidgetId) {
           if (seqNum != null && seqNum === key.sequentialId) {
             // If prefix is present in this page and matches, accept immediately (and fetch details if possible)
             if (pre && pre === key.prefix) {
-              if (c.cardCommonId) {
-                const detailed = await fetchCardByCommonId(c.cardCommonId);
-                return detailed || c;
-              }
-              return c;
+            if (c.cardCommonId) {
+              const detailed = await fetchCardByCommonId(c.cardCommonId);
+              return detailed || { ...c, prefix: c.prefix ?? key.prefix };
+            }
+            return { ...c, prefix: c.prefix ?? key.prefix };
             }
 
             // If prefix missing or could not be confirmed, try to fetch detailed to verify
@@ -253,7 +259,7 @@ async function findCardByKeyInBoards(key, preferredWidgetId) {
 
             // As a last resort, if we are scanning the preferred widget, accept by seq match
             if (preferredWidgetId && widgetCommonId === preferredWidgetId) {
-              return c;
+              return { ...c, prefix: c.prefix ?? key.prefix };
             }
           }
         }
@@ -384,9 +390,9 @@ async function handleTimesheet(interaction) {
     return;
   }
 
-  const header = "Today's update";
+  const header = "Today's update:";
   const body = results
-    .map((r) => `${r.cardKey} - ${r.time}\n* ${r.desc}`)
+    .map((r) => `**${r.cardKey}** - ${r.time}\n* ${ensureTrailingPeriod(r.desc)}`)
     .join('\n');
 
   await interaction.editReply(`${header}\n${body}`);
