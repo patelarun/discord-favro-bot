@@ -10,6 +10,11 @@ const commands = [
        .setDescription('Card numbers or IDs (comma/space separated), e.g. BOK-5106, BOK-5120')
        .setRequired(false)
     )
+    .addStringOption(o =>
+      o.setName('extras')
+       .setDescription('Additional bullet points (semicolon or newline separated)')
+       .setRequired(false)
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('linkfavro')
@@ -23,6 +28,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName('unlinkfavro')
     .setDescription('Unlink your Favro account')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('timesheetdelete')
+    .setDescription('Delete your last timesheet message in this channel')
     .toJSON()
 ];
 

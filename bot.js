@@ -24,8 +24,10 @@ const FAVRO_DEFAULT_CARD_PREFIX = process.env.FAVRO_DEFAULT_CARD_PREFIX;
 // ----- Data folder & mapping file -----
 const DATA_DIR = path.join(__dirname, 'data');
 const MAP_PATH = path.join(DATA_DIR, 'user-map.json');
+const LAST_TS_PATH = path.join(DATA_DIR, 'last-timesheet.json');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(MAP_PATH)) fs.writeFileSync(MAP_PATH, '{}');
+if (!fs.existsSync(LAST_TS_PATH)) fs.writeFileSync(LAST_TS_PATH, '{}');
 
 function loadMap() {
   try {
@@ -38,6 +40,19 @@ function loadMap() {
 }
 function saveMap(map) {
   fs.writeFileSync(MAP_PATH, JSON.stringify(map, null, 2));
+}
+
+function loadLastTimesheetMap() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(LAST_TS_PATH, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+function saveLastTimesheetMap(map) {
+  fs.writeFileSync(LAST_TS_PATH, JSON.stringify(map, null, 2));
 }
 
 // ----- Discord client -----
@@ -311,9 +326,14 @@ async function handleTimesheet(interaction) {
   }
 
   const tokensRaw = interaction.options.getString('cards') || '';
+  const extrasRaw = interaction.options.getString('extras') || '';
   const tokens = tokensRaw
     .split(/[, \n]+/)
     .map(t => t.trim())
+    .filter(Boolean);
+  const extras = extrasRaw
+    .split(/[;\n]+/)
+    .map(s => s.trim())
     .filter(Boolean);
 
   if (!tokens.length) {
@@ -393,11 +413,25 @@ async function handleTimesheet(interaction) {
   }
 
   const header = "Today's update:";
-  const body = results
+  const bodyLines = results
     .map((r) => `**${r.cardKey}** - ${r.time}\n* ${ensureTrailingPeriod(r.desc)}`)
-    .join('\n');
+  if (extras.length) {
+    for (const x of extras) {
+      bodyLines.push(`* ${ensureTrailingPeriod(x)}`);
+    }
+  }
+  const body = bodyLines.join('\n');
 
   await interaction.editReply(`${header}\n${body}`);
+
+  // Persist the last posted timesheet message id for this user in this channel
+  try {
+    const message = await interaction.fetchReply();
+    const key = `${interaction.guildId || 'dm'}:${interaction.channelId}:${interaction.user.id}`;
+    const lastMap = loadLastTimesheetMap();
+    lastMap[key] = { messageId: message.id, channelId: interaction.channelId, guildId: interaction.guildId || null, at: Date.now() };
+    saveLastTimesheetMap(lastMap);
+  } catch {}
 }
 
 async function handleLink(interaction) {
@@ -435,6 +469,31 @@ async function handleUnlink(interaction) {
   }
 }
 
+async function handleTimesheetDelete(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const key = `${interaction.guildId || 'dm'}:${interaction.channelId}:${interaction.user.id}`;
+  const lastMap = loadLastTimesheetMap();
+  const entry = lastMap[key];
+  if (!entry || !entry.messageId) {
+    await interaction.editReply('No recent timesheet message found to delete in this channel.');
+    return;
+  }
+  try {
+    const channel = interaction.channel;
+    const msg = await channel.messages.fetch(entry.messageId);
+    if (msg && msg.author?.id === client.user.id) {
+      await msg.delete();
+      delete lastMap[key];
+      saveLastTimesheetMap(lastMap);
+      await interaction.editReply('Deleted your last timesheet message.');
+    } else {
+      await interaction.editReply('Cannot delete that message (not posted by this bot).');
+    }
+  } catch (err) {
+    await interaction.editReply('Could not delete your last timesheet message (maybe it was already removed).');
+  }
+}
+
 // ----- Discord events -----
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
@@ -446,6 +505,7 @@ client.on('interactionCreate', async (i) => {
     if (i.commandName === 'timesheet') return handleTimesheet(i);
     if (i.commandName === 'linkfavro') return handleLink(i);
     if (i.commandName === 'unlinkfavro') return handleUnlink(i);
+    if (i.commandName === 'timesheetdelete') return handleTimesheetDelete(i);
   } catch (err) {
     console.error('Interaction error:', err);
     if (i.deferred || i.replied) {
