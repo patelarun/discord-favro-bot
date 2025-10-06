@@ -87,7 +87,7 @@ const WIDGET_IDS = (process.env.FAVRO_WIDGET_IDS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
-const MAX_PAGES_PER_WIDGET = Number(process.env.FAVRO_MAX_PAGES_PER_WIDGET || 3);
+const MAX_PAGES_PER_WIDGET = Number(process.env.FAVRO_MAX_PAGES_PER_WIDGET || 10);
 
 // ----- Helpers -----
 function fmtHHMM(ms) {
@@ -184,11 +184,10 @@ function parseFavroUrlToken(raw) {
 // Since the public API doesn’t expose a direct filter by (prefix,sequentialId),
 // we scan a few pages per provided board and stop when we find the matching key.
 async function findCardByKeyInBoards(key, preferredWidgetId) {
-  if (!WIDGET_IDS.length) return null;
-
   const orderedWidgets = [];
   if (preferredWidgetId) orderedWidgets.push(preferredWidgetId);
   for (const w of WIDGET_IDS) if (!orderedWidgets.includes(w)) orderedWidgets.push(w);
+  if (!orderedWidgets.length) return null;
 
   for (const widgetCommonId of orderedWidgets) {
     let page = 0, pages = 1, requestId;
