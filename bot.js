@@ -107,27 +107,50 @@ async function findFavroUserByEmail(email) {
   return null;
 }
 
-// Iterate cards (limited pages)
-async function* iterateCards(maxPages = 10) {
-  let page = 0,
-    requestId = undefined,
-    pages = 1;
-  while (page < pages && page < maxPages) {
-    const params = { include: 'customFields' };
-    if (requestId) {
-      params.requestId = requestId;
-      params.page = page;
-    }
-    const { data, headers } = await favro.get('/cards', { params });
+/**
+ * Get only the cards that had activity today (local TZ).
+ * Strategy:
+ *   1) Page through /activities with since..until for today
+ *   2) Collect unique cardCommonIds
+ *   3) Fetch those cards (include=customFields) so we can read the Time field
+ */
+async function getCardsTouchedToday() {
+  const start = dayjs().tz(TZ).startOf('day').toISOString();
+  const end   = dayjs().tz(TZ).endOf('day').toISOString();
+
+  const ids = new Set();
+
+  let page = 0, pages = 1, requestId;
+  while (page < pages) {
+    const params = { since: start, until: end };
+    if (requestId) { params.requestId = requestId; params.page = page; }
+    const { data, headers } = await favro.get('/activities', { params });
+
+    // pagination
     requestId = data.requestId;
     pages = data.pages || 1;
+
+    // stickiness header for routing (Favro rec)
     const backendId = headers['x-favro-backend-identifier'];
     if (backendId)
       favro.defaults.headers['X-Favro-Backend-Identifier'] = backendId;
 
-    for (const c of data.entities || []) yield c;
+    for (const a of data.entities || []) {
+      // Most activity objects include the cardCommonId they refer to
+      if (a.cardCommonId) ids.add(a.cardCommonId);
+    }
     page++;
   }
+
+  // Fetch only those cards (include customFields)
+  const cards = [];
+  for (const cardCommonId of ids) {
+    const { data } = await favro.get('/cards', {
+      params: { cardCommonId, include: 'customFields' }
+    });
+    for (const c of data.entities || []) cards.push(c);
+  }
+  return cards;
 }
 
 function extractTodaysReports(card, favroUserId, timeCfId) {
@@ -165,8 +188,11 @@ async function handleTimesheet(interaction) {
     return;
   }
 
+  // 🔎 Only inspect cards that had activity today
+  const todaysCards = await getCardsTouchedToday();
+
   let results = [];
-  for await (const card of iterateCards(20)) {
+  for (const card of todaysCards) {
     const entries = extractTodaysReports(card, favroUserId, TIME_CF_ID);
     if (entries.length) {
       for (const e of entries) {
